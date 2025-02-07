@@ -179,6 +179,8 @@ import com.android.server.inputmethod.InputMethodManagerService;
 import com.android.server.integrity.AppIntegrityManagerService;
 import com.android.server.job.JobSchedulerService;
 import com.android.server.lights.LightsService;
+import com.android.server.lineage.display.LiveDisplayService;
+import com.android.server.lineage.LineageHardwareService;
 import com.android.server.locales.LocaleManagerService;
 import com.android.server.location.LocationManagerService;
 import com.android.server.location.altitude.AltitudeService;
@@ -205,6 +207,7 @@ import com.android.server.os.SchedulingPolicyService;
 import com.android.server.pdb.PersistentDataBlockService;
 import com.android.server.people.PeopleService;
 import com.android.server.permission.access.AccessCheckingService;
+import com.android.server.pixelage.AttestationService;
 import com.android.server.pixelage.CustomDeviceConfigService;
 import com.android.server.pm.ApexManager;
 import com.android.server.pm.ApexSystemServiceInfo;
@@ -1734,6 +1737,10 @@ public final class SystemServer implements Dumpable {
             mSystemServiceManager.startService(LogcatManagerService.class);
             t.traceEnd();
 
+            t.traceBegin("StartSmart5gService");
+            mSystemServiceManager.startService(Smart5gService.class);
+            t.traceEnd();
+
             if (AppFunctionManagerConfiguration.isSupported(context)) {
                 t.traceBegin("StartAppFunctionManager");
                 mSystemServiceManager.startService(AppFunctionManagerService.class);
@@ -2688,6 +2695,15 @@ public final class SystemServer implements Dumpable {
             // Lineage Health
             t.traceBegin("StartHealthService");
             mSystemServiceManager.startService(HealthInterfaceService.class);
+
+            // LineageHardware
+            t.traceBegin("StartLineageHardwareService");
+            mSystemServiceManager.startService(LineageHardwareService.class);
+            t.traceEnd();
+
+            // LiveDisplay
+            t.traceBegin("StartLiveDisplayService");
+            mSystemServiceManager.startService(LiveDisplayService.class);
             t.traceEnd();
 
             if (!com.android.server.flags.Flags.optionalBackgroundInstallControl()
@@ -2697,6 +2713,11 @@ public final class SystemServer implements Dumpable {
                 mSystemServiceManager.startService(BackgroundInstallControlService.class);
                 t.traceEnd();
             }
+
+            // AttestationService
+            t.traceBegin("AttestationService");
+            mSystemServiceManager.startService(AttestationService.class);
+            t.traceEnd();
         }
 
         t.traceBegin("StartMediaProjectionManager");

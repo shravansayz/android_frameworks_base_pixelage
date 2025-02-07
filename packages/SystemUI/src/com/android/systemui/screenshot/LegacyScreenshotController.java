@@ -33,19 +33,32 @@ import android.animation.AnimatorListenerAdapter;
 import android.annotation.MainThread;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.app.ActivityTaskManager;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.ActivityInfo;
+import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Insets;
 import android.graphics.Rect;
+import android.hardware.camera2.CameraManager;
+import android.media.AudioManager;
+import android.media.MediaActionSound;
 import android.net.Uri;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.Process;
+import android.os.SystemProperties;
+import android.os.RemoteException;
 import android.os.UserHandle;
 import android.os.UserManager;
+import android.os.VibrationAttributes;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
 import android.provider.Settings;
 import android.util.DisplayMetrics;
 import android.util.Log;
@@ -55,6 +68,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewRootImpl;
 import android.view.ViewTreeObserver;
+import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.Toast;
@@ -71,6 +85,8 @@ import com.android.systemui.flags.FeatureFlags;
 import com.android.systemui.res.R;
 import com.android.systemui.screenshot.TakeScreenshotService.RequestCallback;
 import com.android.systemui.screenshot.scroll.ScrollCaptureExecutor;
+import com.android.systemui.shared.system.TaskStackChangeListener;
+import com.android.systemui.shared.system.TaskStackChangeListeners;
 import com.android.systemui.util.Assert;
 
 import com.google.common.util.concurrent.ListenableFuture;
@@ -95,10 +111,18 @@ import javax.inject.Provider;
 public class LegacyScreenshotController implements InteractiveScreenshotHandler {
     private static final String TAG = logTag(LegacyScreenshotController.class);
 
+    static final String SCREENSHOT_URI_ID = "android:screenshot_uri_id";
+
     // From WizardManagerHelper.java
     private static final String SETTINGS_SECURE_USER_SETUP_COMPLETE = "user_setup_complete";
 
     static final int SCREENSHOT_CORNER_DEFAULT_TIMEOUT_MILLIS = 3000;
+
+    private static final VibrationEffect VIBRATION_EFFECT =
+            VibrationEffect.createPredefined(VibrationEffect.EFFECT_HEAVY_CLICK);
+
+    private static final VibrationAttributes VIBRATION_ATTRS =
+            VibrationAttributes.createForUsage(VibrationAttributes.USAGE_TOUCH);
 
     private final WindowContext mContext;
     private final FeatureFlags mFlags;
@@ -118,6 +142,9 @@ public class LegacyScreenshotController implements InteractiveScreenshotHandler 
     private final WindowManager.LayoutParams mWindowLayoutParams;
     @Nullable
     private final ScreenshotSoundController mScreenshotSoundController;
+    private final AudioManager mAudioManager;
+    private final Vibrator mVibrator;
+    private int mCamsInUse = 0;
     private final PhoneWindow mWindow;
     private final Display mDisplay;
     private final ScrollCaptureExecutor mScrollCaptureExecutor;
@@ -149,6 +176,48 @@ public class LegacyScreenshotController implements InteractiveScreenshotHandler 
                     | ActivityInfo.CONFIG_SCREEN_LAYOUT
                     | ActivityInfo.CONFIG_ASSETS_PATHS);
 
+    private ComponentName mTaskComponentName;
+    private PackageManager mPm;
+
+    private final TaskStackChangeListener mTaskListener = new TaskStackChangeListener() {
+        @Override
+        public void onTaskStackChanged() {
+            mBgExecutor.execute(() -> updateForegroundTaskSync());
+        }
+    };
+
+    private void updateForegroundTaskSync() {
+        try {
+            final ActivityTaskManager.RootTaskInfo focusedStack =
+                    ActivityTaskManager.getService().getFocusedRootTaskInfo();
+            if (focusedStack != null && focusedStack.topActivity != null) {
+                mTaskComponentName = focusedStack.topActivity;
+            }
+        } catch (RemoteException e) {
+            Log.e(TAG, "Failed to get foreground task component", e);
+        }
+    }
+
+    private String getForegroundAppLabel() {
+        try {
+            final ActivityInfo ai = mPm.getActivityInfo(mTaskComponentName, 0);
+            return ai.applicationInfo.loadLabel(mPm).toString();
+        } catch (PackageManager.NameNotFoundException e) {
+             return null;
+        }
+    }
+
+    private CameraManager.AvailabilityCallback mCamCallback =
+            new CameraManager.AvailabilityCallback() {
+        @Override
+        public void onCameraOpened(String cameraId, String packageId) {
+            mCamsInUse++;
+        }
+        @Override
+        public void onCameraClosed(String cameraId) {
+            mCamsInUse--;
+        }
+    };
 
     @AssistedInject
     LegacyScreenshotController(
@@ -217,6 +286,10 @@ public class LegacyScreenshotController implements InteractiveScreenshotHandler 
 
         mWindow = FloatingWindowUtil.getFloatingWindow(mContext);
         mWindow.setWindowManager(mWindowManager, null, null);
+        mWindow.requestFeature(Window.FEATURE_NO_TITLE);
+        mWindow.requestFeature(Window.FEATURE_ACTIVITY_TRANSITIONS);
+        mWindow.setBackgroundDrawableResource(android.R.color.transparent);
+        mWindow.setDecorFitsSystemWindows(false);
 
         mConfigChanges.applyNewConfig(context.getResources());
         reloadAssets();
@@ -236,6 +309,17 @@ public class LegacyScreenshotController implements InteractiveScreenshotHandler 
             mScreenshotSoundController = null;
         }
 
+        // Grab system services needed for screenshot sound
+        mAudioManager = (AudioManager) mContext.getSystemService(Context.AUDIO_SERVICE);
+        mVibrator = (Vibrator) mContext.getSystemService(Context.VIBRATOR_SERVICE);
+
+        if (SystemProperties.getBoolean("audio.camerasound.force", false)
+                || mContext.getResources().getBoolean(
+                        com.android.internal.R.bool.config_camera_sound_forced)) {
+            mContext.getSystemService(CameraManager.class).registerAvailabilityCallback(
+                    mCamCallback, new Handler(Looper.getMainLooper()));
+        }
+
         mCopyBroadcastReceiver = new BroadcastReceiver() {
             @Override
             public void onReceive(Context context, Intent intent) {
@@ -247,6 +331,15 @@ public class LegacyScreenshotController implements InteractiveScreenshotHandler 
         mBroadcastDispatcher.registerReceiver(mCopyBroadcastReceiver, new IntentFilter(
                         ClipboardOverlayController.COPY_OVERLAY_ACTION), null, null,
                 Context.RECEIVER_NOT_EXPORTED, ClipboardOverlayController.SELF_PERMISSION);
+
+        // Grab PackageManager
+        mPm = mContext.getPackageManager();
+
+        // Register task stack listener
+        TaskStackChangeListeners.getInstance().registerTaskStackListener(mTaskListener);
+
+        // Initialize current foreground package name
+        updateForegroundTaskSync();
     }
 
     @Override
@@ -394,6 +487,7 @@ public class LegacyScreenshotController implements InteractiveScreenshotHandler 
         removeWindow();
         releaseMediaPlayer();
         releaseContext();
+        TaskStackChangeListeners.getInstance().unregisterTaskStackListener(mTaskListener);
         mBgExecutor.shutdown();
     }
 
@@ -435,8 +529,7 @@ public class LegacyScreenshotController implements InteractiveScreenshotHandler 
 
             @Override
             public void onTouchOutside() {
-                // TODO(159460485): Remove this when focus is handled properly in the system
-                setWindowFocusable(false);
+                mViewProxy.requestDismissal(SCREENSHOT_DISMISSED_OTHER);
             }
         });
 
@@ -590,7 +683,7 @@ public class LegacyScreenshotController implements InteractiveScreenshotHandler 
      */
     private void saveScreenshotAndToast(ScreenshotData screenshot, Consumer<Uri> finisher) {
         // Play the shutter sound to notify that we've taken a screenshot
-        playCameraSoundIfNeeded();
+        playShutterSound();
 
         saveScreenshotInBackground(screenshot, UUID.randomUUID(), finisher, result -> {
             if (result.uri != null) {
@@ -621,7 +714,7 @@ public class LegacyScreenshotController implements InteractiveScreenshotHandler 
         }
 
         // Play the shutter sound to notify that we've taken a screenshot
-        playCameraSoundIfNeeded();
+        playShutterSound();
 
         if (DEBUG_ANIM) {
             Log.d(TAG, "starting post-screenshot animation");
@@ -647,7 +740,7 @@ public class LegacyScreenshotController implements InteractiveScreenshotHandler 
             Consumer<Uri> finisher, Consumer<ImageExporter.Result> onResult) {
         ListenableFuture<ImageExporter.Result> future = mImageExporter.export(mBgExecutor,
                 requestId, screenshot.getBitmap(), screenshot.getUserOrDefault(),
-                mDisplay.getDisplayId());
+                mDisplay.getDisplayId(), getForegroundAppLabel());
         future.addListener(() -> {
             try {
                 ImageExporter.Result result = future.get();
@@ -759,5 +852,17 @@ public class LegacyScreenshotController implements InteractiveScreenshotHandler 
          * @param display                 display to capture
          */
         LegacyScreenshotController create(Display display);
+    }
+
+    private void playShutterSound() {
+        boolean playSound = Settings.System.getIntForUser(mContext.getContentResolver(),
+                Settings.System.SCREENSHOT_SHUTTER_SOUND, 1, UserHandle.USER_CURRENT) == 1
+                && mAudioManager.getRingerMode() == AudioManager.RINGER_MODE_NORMAL;
+        boolean playSoundForced = mCamsInUse > 0;
+        if (playSoundForced || playSound) {
+            playCameraSoundIfNeeded();
+        } else if (mVibrator != null && mVibrator.hasVibrator()) {
+            mVibrator.vibrate(VIBRATION_EFFECT, VIBRATION_ATTRS);
+        }
     }
 }

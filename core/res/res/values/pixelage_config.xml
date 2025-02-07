@@ -18,13 +18,16 @@
 <resources>
     <!-- Build properties from a GMS certified device against current platform SPL level -->
     <string-array name="config_certifiedBuildProperties" translatable="false">
-        <item>PRODUCT:tokay_beta</item>
-        <item>DEVICE:tokay</item>
-        <item>MANUFACTURER:Google</item>
-        <item>BRAND:google</item>
-        <item>MODEL:Pixel 9</item>
-        <item>FINGERPRINT:google/tokay_beta/tokay:15/BP11.241025.006/12620009:user/release-keys</item>
-        <item>VERSION.SECURITY_PATCH:2024-11-05</item>
+      <!--
+        Each entry must be of the format
+            FIELD:value
+        with the field belonging to android.os.Build or android.os.Build.VERSION class.
+        Example:
+        <item>BRAND:foo</item>
+        <item>DEVICE:bar</item>
+        <item>FINGERPRINT:foo/bar/bar:1.0/lorem/ipsum:dolor/sit-amet</item>
+        <item>VERSION.RELEASE:1.0</item>
+      -->
     </string-array>
 
     <!-- Build fingerprint from stock ROM -->
@@ -144,4 +147,46 @@
     <!-- List of system apps that are allowed to be locked with app lock.
          Use with extreme caution. -->
     <string-array name="config_appLockAllowedSystemApps" translatable="false" />
+
+    <!-- Default values for LiveDisplay -->
+    <bool name="config_enableLiveDisplay">true</bool>
+    <integer name="config_dayColorTemperature">6500</integer>
+    <integer name="config_nightColorTemperature">4800</integer>
+    <integer name="config_outdoorAmbientLux">12000</integer>
+    <integer name="config_outdoorAmbientLuxHysteresis">1500</integer>
+    <integer name="config_defaultLiveDisplayMode">2</integer>
+
+    <!-- These values should map to the true min and max
+        that the backend is capable of adjusting to. This
+        is more important when using the ColorBalance mode,
+        as the discrete adjustment is interpolated between
+        this range (with config_dayColorTemperature at zero) -->
+    <integer name="config_minColorTemperature">1000</integer>
+    <integer name="config_maxColorTemperature">10000</integer>
+    <bool name="config_defaultAutoContrast">false</bool>
+    <bool name="config_defaultAutoOutdoorMode">true</bool>
+    <bool name="config_defaultColorEnhancement">true</bool>
+    <bool name="config_defaultCABC">true</bool>
+    <bool name="config_defaultAntiFlicker">false</bool>
+
+    <!-- Display mode remapping table.
+        If the mode names returned by the backend do not match
+        the predefined and translated strings in the Settings
+        app, they can be remapped here. The format is
+        "oldname:newname", one per entry. -->
+    <string-array name="config_displayModeMappings" translatable="false" />
+
+    <!-- Should we filter any display modes which are unmapped? -->
+    <bool name="config_filterDisplayModes">false</bool>
+
+    <!-- Array of:
+        - Path to fast charging status file
+        - Delimiter ";"
+        - Value if fast charging is active
+        Used to detect whether an oem fast charger is active
+        Example: <item>/sys/class/power_supply/battery/fastchg_status;1</item>
+    -->
+    <string-array name="config_oemFastChargerStatusPaths" translatable="false">
+    </string-array>
+
 </resources>
